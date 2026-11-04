@@ -152,13 +152,15 @@ matching = freight[freight["Destination"].str.casefold() == destination.casefold
 jas_rate_column, ait_rate_column = CONTAINERS[container]
 offers = []
 for _, route in matching.iterrows():
-    for forwarder, column in (
-        ("JAS", jas_rate_column if objective == "Cost" else "Transit time JAS"),
-        ("AIT", ait_rate_column if objective == "Cost" else "Transit time AIT"),
+    for forwarder, rate_column, transit_column in (
+        ("JAS", jas_rate_column, "Transit time JAS"),
+        ("AIT", ait_rate_column, "Transit time AIT"),
     ):
-        value = parse_number(route[column])
-        if value is not None:
-            offers.append((value, route, forwarder))
+        price = parse_number(route[rate_column])
+        value_column = rate_column if objective == "Cost" else transit_column
+        value = parse_number(route[value_column])
+        if price is not None and value is not None:
+            offers.append((value, route, forwarder, price))
 
 best_value = min((offer[0] for offer in offers), default=None)
 best_offers = [
@@ -166,13 +168,16 @@ best_offers = [
 ] if best_value is not None else []
 recommendations = [
     {
-        "Best value": format_eur(value) if objective == "Cost" else format_days(value),
+        "Price": format_eur(price),
+        "Transit time": format_days(
+            route["Transit time JAS" if forwarder == "JAS" else "Transit time AIT"]
+        ),
         "Forwarder": forwarder,
         "Origin": route["Origin"],
         "POL": route["POL"],
         "POD": route["POD"],
     }
-    for value, route, forwarder in best_offers
+    for value, route, forwarder, price in best_offers
 ]
 
 st.divider()
@@ -180,6 +185,8 @@ st.subheader(f"Best {container} option to {destination}")
 st.caption(f"Minimizing {objective.lower()} · Prices in EUR")
 if matching.empty:
     st.info("No matching freight rows were found.")
+elif not recommendations:
+    st.info("No priced offers are available for this destination, container, and objective.")
 else:
     result = pd.DataFrame(recommendations)
     styled = result.style.apply(style_best_offer, axis=1)
