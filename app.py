@@ -109,6 +109,49 @@ def style_best_offer(row):
     return [color] * len(row)
 
 
+def best_offers(routes: pd.DataFrame, container: str, objective: str) -> pd.DataFrame:
+    jas_rate_column, ait_rate_column = CONTAINERS[container]
+    offers = []
+    for _, route in routes.iterrows():
+        for forwarder, rate_column in (
+            ("JAS", jas_rate_column),
+            ("AIT", ait_rate_column),
+        ):
+            transit_column = f"Transit time {forwarder}"
+            value_column = rate_column if objective == "Cost" else transit_column
+            value = parse_number(route[value_column])
+            if value is not None:
+                offers.append((value, route, forwarder, rate_column, transit_column))
+
+    best_value = min((offer[0] for offer in offers), default=None)
+    if best_value is None:
+        return pd.DataFrame()
+
+    recommendations = []
+    for value, route, forwarder, rate_column, transit_column in offers:
+        if not math.isclose(value, best_value):
+            continue
+        recommendations.append(
+            {
+                "Forwarder": forwarder,
+                "Price": format_eur(route[rate_column]),
+                "Transit time": format_days(route[transit_column]),
+                "Origin": route["Origin"],
+                "Destination": route["Destination"],
+                "POL": route["POL"],
+                "POD": route["POD"],
+                "Transshipment": route[f"Transshipment {forwarder}"] or "—",
+                "Free time at origin": format_days(
+                    route[f"Origin free time {forwarder}"]
+                ),
+                "Free time at destination": format_days(
+                    route[f"Destination free time {forwarder}"]
+                ),
+            }
+        )
+    return pd.DataFrame(recommendations)
+
+
 st.set_page_config(page_title="Freight comparison", layout="wide")
 st.markdown(
     """
@@ -127,7 +170,10 @@ st.markdown(
 
 st.caption("FREIGHT PROCUREMENT  /  JAS vs AIT")
 st.title("Freight comparison")
-st.write("Choose a destination, container, and objective to compare offers from every origin.")
+st.write(
+    "Choose an origin, destination, and container to compare the best cost and "
+    "transit-time offers."
+)
 
 if not WORKBOOK_PATH.exists():
     st.error(f"Workbook not found: {WORKBOOK_PATH.name}")
@@ -139,58 +185,39 @@ except Exception as error:
     st.error(f"Could not read the '{SHEET_NAME}' sheet: {error}")
     st.stop()
 
-destination_col, container_col, objective_col = st.columns([1, 1, 1.4], gap="large")
-destinations = sorted(freight["Destination"].unique(), key=str.casefold)
+origin_col, destination_col, container_col = st.columns(3, gap="large")
+origins = sorted(freight["Origin"].unique(), key=str.casefold)
+with origin_col:
+    origin = st.selectbox("Origin", origins)
+origin_routes = freight[freight["Origin"].str.casefold() == origin.casefold()]
+destinations = sorted(origin_routes["Destination"].unique(), key=str.casefold)
 with destination_col:
     destination = st.selectbox("Destination", destinations)
 with container_col:
     container = st.selectbox("Container type", list(CONTAINERS))
-with objective_col:
-    objective = st.radio("Minimize", ["Cost", "Transit time"], horizontal=True)
-matching = freight[freight["Destination"].str.casefold() == destination.casefold()]
-
-jas_rate_column, ait_rate_column = CONTAINERS[container]
-offers = []
-for _, route in matching.iterrows():
-    for forwarder, rate_column, transit_column in (
-        ("JAS", jas_rate_column, "Transit time JAS"),
-        ("AIT", ait_rate_column, "Transit time AIT"),
-    ):
-        price = parse_number(route[rate_column])
-        value_column = rate_column if objective == "Cost" else transit_column
-        value = parse_number(route[value_column])
-        if price is not None and value is not None:
-            offers.append((value, route, forwarder, price))
-
-best_value = min((offer[0] for offer in offers), default=None)
-best_offers = [
-    offer for offer in offers if math.isclose(offer[0], best_value)
-] if best_value is not None else []
-recommendations = [
-    {
-        "Price": format_eur(price),
-        "Transit time": format_days(
-            route["Transit time JAS" if forwarder == "JAS" else "Transit time AIT"]
-        ),
-        "Forwarder": forwarder,
-        "Origin": route["Origin"],
-        "POL": route["POL"],
-        "POD": route["POD"],
-    }
-    for value, route, forwarder, price in best_offers
+matching = origin_routes[
+    origin_routes["Destination"].str.casefold() == destination.casefold()
 ]
 
 st.divider()
-st.subheader(f"Best {container} option to {destination}")
-st.caption(f"Minimizing {objective.lower()} · Prices in EUR")
-if matching.empty:
-    st.info("No matching freight rows were found.")
-elif not recommendations:
-    st.info("No priced offers are available for this destination, container, and objective.")
-else:
-    result = pd.DataFrame(recommendations)
-    styled = result.style.apply(style_best_offer, axis=1)
-    st.dataframe(styled, hide_index=True, width="stretch")
-    st.caption(f"Compared {len(matching)} routes across {matching['Origin'].nunique()} origins")
+for objective, title in (
+    ("Cost", f"Best cost option · {container}"),
+    ("Transit time", f"Best transit time option · {container}"),
+):
+    st.subheader(title)
+    options = best_offers(matching, container, objective)
+    if options.empty:
+        st.info(
+            f"No {objective.lower()} offers are available for this "
+            "origin, destination, and container type."
+        )
+    else:
+        st.dataframe(
+            options.style.apply(style_best_offer, axis=1),
+            hide_index=True,
+            width="stretch",
+        )
+
+st.caption(f"Compared {len(matching)} matching route(s) · Prices in EUR")
 
 st.caption(f"Source: {WORKBOOK_PATH.name} · {len(freight)} routes in Freight Comparison")
